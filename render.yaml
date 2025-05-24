@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: playbook-backend
+    runtime: python
+    rootDir: backend
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "uvicorn main:app --host 0.0.0.0 --port $PORT"
+    envVars:
+      - key: PORT
+        value: 8000
+      - key: SECRET_KEY
+        generateValue: true
+      - key: FRONTEND_URL
+        value: https://your-app.netlify.app
+    healthCheckPath: /api/v2/health
