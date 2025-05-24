@@ -1,12 +1,13 @@
 [phases.setup]
-nixPkgs = ["python39", "gcc", "stdenv.cc.cc.lib"]
+nixPkgs = ["python39", "python39Packages.pip", "gcc", "stdenv.cc.cc.lib"]
 aptPkgs = ["libgcc-s1", "build-essential"]
 
 [phases.install]
 cmds = [
     "python --version",
-    "pip install --upgrade pip",
-    "pip install -r backend/requirements.txt"
+    "python -m ensurepip",
+    "python -m pip install --upgrade pip",
+    "python -m pip install -r backend/requirements.txt"
 ]
 
 [start]
