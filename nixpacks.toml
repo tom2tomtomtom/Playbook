@@ -1,8 +1,13 @@
 [phases.setup]
-nixPkgs = ["python39", "gcc"]
+nixPkgs = ["python39", "gcc", "stdenv.cc.cc.lib"]
+aptPkgs = ["libgcc-s1", "build-essential"]
 
 [phases.install]
-cmds = ["pip install -r backend/requirements.txt"]
+cmds = [
+    "python --version",
+    "pip install --upgrade pip",
+    "pip install -r backend/requirements.txt"
+]
 
 [start]
-cmd = "cd backend && uvicorn main:app --host 0.0.0.0 --port $PORT"
+cmd = "cd backend && python -m uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}"
