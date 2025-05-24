@@ -7,15 +7,25 @@ services:
       - "8000:8000"
     environment:
       - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - SECRET_KEY=${SECRET_KEY:-your-secret-key-here}
+      - FRONTEND_URL=http://localhost:5173
     volumes:
       - ./backend/uploads:/app/uploads
       - ./backend/chroma_db:/app/chroma_db
+      - ./backend/logs:/app/logs
     restart: unless-stopped
 
   frontend:
     build: ./frontend
     ports:
-      - "5173:5173"
+      - "5173:80"
+    environment:
+      - VITE_API_URL=http://localhost:8000/api/v2
     depends_on:
       - backend
     restart: unless-stopped
+
+volumes:
+  uploads:
+  chroma_db:
+  logs:
