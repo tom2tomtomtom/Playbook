@@ -13,15 +13,19 @@ import json
 logger = logging.getLogger(__name__)
 
 class VectorStore:
-    def __init__(self):
+    def __init__(self, api_key: Optional[str] = None):
         # Initialize ChromaDB
         self.client = chromadb.PersistentClient(
             path=settings.chroma_persist_directory,
             settings=Settings(anonymized_telemetry=False)
         )
         
-        # Initialize OpenAI
-        openai.api_key = settings.openai_api_key
+        # Use provided API key or fall back to settings
+        self.api_key = api_key or settings.openai_api_key
+        if not self.api_key:
+            raise ValueError("OpenAI API key is required")
+        
+        openai.api_key = self.api_key
         self.embedding_model = settings.embedding_model
         
         # Get or create collections
@@ -239,7 +243,8 @@ class VectorStore:
             
             try:
                 logger.debug(f"Getting embeddings for batch {i//batch_size + 1}")
-                response = openai.embeddings.create(
+                client = openai.OpenAI(api_key=self.api_key)
+                response = client.embeddings.create(
                     model=self.embedding_model,
                     input=batch
                 )

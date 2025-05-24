@@ -11,9 +11,15 @@ from datetime import datetime
 logger = logging.getLogger(__name__)
 
 class QAEngine:
-    def __init__(self, vector_store: VectorStore):
+    def __init__(self, vector_store: VectorStore, api_key: Optional[str] = None):
         self.vector_store = vector_store
-        openai.api_key = settings.openai_api_key
+        
+        # Use provided API key or fall back to settings
+        self.api_key = api_key or settings.openai_api_key
+        if not self.api_key:
+            raise ValueError("OpenAI API key is required")
+        
+        openai.api_key = self.api_key
         self.model = settings.openai_model
         self.temperature = 0.5  # Balanced between creativity and accuracy
         
@@ -21,7 +27,8 @@ class QAEngine:
         self.token_usage = {
             "total_prompt_tokens": 0,
             "total_completion_tokens": 0,
-            "total_cost": 0.0
+            "total_cost": 0.0,
+            "query_count": 0
         }
     
     def answer_question(self, question: str, playbook_id: Optional[str] = None,
@@ -54,6 +61,9 @@ class QAEngine:
         
         # Calculate confidence based on passage scores and answer quality
         confidence = self._calculate_confidence(relevant_passages, answer_data)
+        
+        # Increment query count
+        self.token_usage["query_count"] += 1
         
         # Format response
         response = {
@@ -131,7 +141,8 @@ At the end, suggest 2-3 relevant follow-up questions that might help the user be
             messages.append({"role": "user", "content": user_prompt})
             
             # Make API call
-            response = openai.chat.completions.create(
+            client = openai.OpenAI(api_key=self.api_key)
+            response = client.chat.completions.create(
                 model=self.model,
                 messages=messages,
                 temperature=self.temperature,
@@ -222,9 +233,10 @@ At the end, suggest 2-3 relevant follow-up questions that might help the user be
     
     def get_token_usage_report(self) -> Dict:
         """Get token usage report"""
+        query_count = max(self.token_usage.get("query_count", 1), 1)
         return {
             **self.token_usage,
-            "average_cost_per_query": self.token_usage["total_cost"] / max(self.token_usage.get("query_count", 1), 1)
+            "average_cost_per_query": self.token_usage["total_cost"] / query_count
         }
     
     def generate_summary(self, playbook_id: str) -> Dict:
@@ -258,7 +270,8 @@ Excerpts:
 Provide a structured summary with clear sections."""
         
         try:
-            response = openai.chat.completions.create(
+            client = openai.OpenAI(api_key=self.api_key)
+            response = client.chat.completions.create(
                 model=self.model,
                 messages=[
                     {"role": "system", "content": "You are a brand expert summarizing key brand guidelines."},

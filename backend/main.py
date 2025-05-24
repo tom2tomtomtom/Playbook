@@ -1,9 +1,9 @@
-from fastapi import FastAPI, File, UploadFile, HTTPException, Depends, Request, status
+from fastapi import FastAPI, File, UploadFile, HTTPException, Depends, Request, status, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from pydantic import BaseModel, Field
-from typing import List, Optional, Dict
+from typing import List, Optional, Dict, Annotated
 import os
 import uuid
 from datetime import datetime, timedelta
@@ -53,8 +53,6 @@ doc_processor = DocumentProcessor(
     chunk_size=settings.chunk_size,
     chunk_overlap=settings.chunk_overlap
 )
-vector_store = VectorStore()
-qa_engine = QAEngine(vector_store)
 
 # Ensure upload directory exists
 os.makedirs(settings.upload_directory, exist_ok=True)
@@ -93,6 +91,18 @@ class HealthResponse(BaseModel):
     total_playbooks: int
     total_chunks: int
 
+class ApiKeyValidationResponse(BaseModel):
+    valid: bool
+    message: str
+    model: Optional[str] = None
+
+# Helper function to get API key
+def get_api_key(x_api_key: Annotated[Optional[str], Header()] = None) -> Optional[str]:
+    """Get API key from header or fall back to environment variable"""
+    if x_api_key:
+        return x_api_key
+    return settings.openai_api_key
+
 # Authentication endpoint
 @app.post(f"{settings.api_prefix}/auth/login", response_model=Token)
 async def login(form_data: OAuth2PasswordRequestForm = Depends()):
@@ -110,11 +120,45 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends()):
     )
     return {"access_token": access_token, "token_type": "bearer"}
 
+# API Key validation endpoint
+@app.post(f"{settings.api_prefix}/validate-api-key", response_model=ApiKeyValidationResponse)
+@limiter.limit("10/minute")
+async def validate_api_key(
+    request: Request,
+    api_key: str = Field(..., description="OpenAI API key to validate"),
+    current_user: User = Depends(get_current_active_user)
+):
+    """Validate an OpenAI API key"""
+    import openai
+    
+    try:
+        # Test the API key by making a simple request
+        client = openai.OpenAI(api_key=api_key)
+        models = client.models.list()
+        
+        # Check if GPT-4 is available
+        gpt4_available = any("gpt-4" in model.id for model in models.data)
+        model_name = "gpt-4-turbo-preview" if gpt4_available else "gpt-3.5-turbo"
+        
+        return ApiKeyValidationResponse(
+            valid=True,
+            message="API key is valid",
+            model=model_name
+        )
+    except Exception as e:
+        logger.warning(f"Invalid API key provided: {str(e)}")
+        return ApiKeyValidationResponse(
+            valid=False,
+            message="Invalid API key. Please check your key and try again."
+        )
+
 # Health check endpoint
 @app.get(f"{settings.api_prefix}/health", response_model=HealthResponse)
 async def health_check():
     """Health check endpoint"""
     try:
+        # Initialize vector store with default API key for health check
+        vector_store = VectorStore(api_key=settings.openai_api_key)
         stats = vector_store.get_statistics()
         return HealthResponse(
             status="healthy",
@@ -140,9 +184,13 @@ async def root():
 async def upload_playbook(
     request: Request,
     file: UploadFile = File(...),
-    current_user: User = Depends(get_current_active_user)
+    current_user: User = Depends(get_current_active_user),
+    api_key: Optional[str] = Depends(get_api_key)
 ):
     """Upload and process a brand playbook (PDF, PowerPoint, or Word)"""
+    if not api_key:
+        raise HTTPException(400, "OpenAI API key required. Please provide via X-API-Key header.")
+    
     # Validate file size
     file_size = 0
     file_content = await file.read()
@@ -184,7 +232,8 @@ async def upload_playbook(
             "created_at": datetime.utcnow().isoformat()
         }
         
-        # Store in vector database
+        # Store in vector database with provided API key
+        vector_store = VectorStore(api_key=api_key)
         vector_store.add_documents(playbook_id, extracted_content, metadata)
         
         return UploadResponse(
@@ -207,11 +256,19 @@ async def upload_playbook(
 async def ask_question(
     request: Request,
     question_request: QuestionRequest,
-    current_user: User = Depends(get_current_active_user)
+    current_user: User = Depends(get_current_active_user),
+    api_key: Optional[str] = Depends(get_api_key)
 ):
     """Ask a question about the brand playbook"""
+    if not api_key:
+        raise HTTPException(400, "OpenAI API key required. Please provide via X-API-Key header.")
+    
     try:
         logger.info(f"User {current_user.username} asking: {question_request.question}")
+        
+        # Initialize components with provided API key
+        vector_store = VectorStore(api_key=api_key)
+        qa_engine = QAEngine(vector_store, api_key=api_key)
         
         result = qa_engine.answer_question(
             question=question_request.question,
@@ -229,15 +286,20 @@ async def list_playbooks(
     request: Request,
     page: int = 1,
     page_size: int = 10,
-    current_user: User = Depends(get_current_active_user)
+    current_user: User = Depends(get_current_active_user),
+    api_key: Optional[str] = Depends(get_api_key)
 ):
     """List all uploaded playbooks with pagination"""
+    if not api_key:
+        api_key = settings.openai_api_key
+    
     try:
         if page < 1:
             raise HTTPException(400, "Page must be >= 1")
         if page_size < 1 or page_size > 100:
             raise HTTPException(400, "Page size must be between 1 and 100")
         
+        vector_store = VectorStore(api_key=api_key)
         result = vector_store.list_playbooks(page=page, page_size=page_size)
         return result
     except HTTPException:
@@ -249,10 +311,15 @@ async def list_playbooks(
 @app.get(f"{settings.api_prefix}/playbooks/{{playbook_id}}")
 async def get_playbook_info(
     playbook_id: str,
-    current_user: User = Depends(get_current_active_user)
+    current_user: User = Depends(get_current_active_user),
+    api_key: Optional[str] = Depends(get_api_key)
 ):
     """Get information about a specific playbook"""
+    if not api_key:
+        api_key = settings.openai_api_key
+    
     try:
+        vector_store = VectorStore(api_key=api_key)
         info = vector_store.get_playbook_info(playbook_id)
         if not info:
             raise HTTPException(404, "Playbook not found")
@@ -268,10 +335,16 @@ async def get_playbook_info(
 async def get_playbook_summary(
     request: Request,
     playbook_id: str,
-    current_user: User = Depends(get_current_active_user)
+    current_user: User = Depends(get_current_active_user),
+    api_key: Optional[str] = Depends(get_api_key)
 ):
     """Generate a summary of a playbook's key points"""
+    if not api_key:
+        raise HTTPException(400, "OpenAI API key required. Please provide via X-API-Key header.")
+    
     try:
+        vector_store = VectorStore(api_key=api_key)
+        qa_engine = QAEngine(vector_store, api_key=api_key)
         summary = qa_engine.generate_summary(playbook_id)
         return summary
     except Exception as e:
@@ -281,11 +354,16 @@ async def get_playbook_summary(
 @app.delete(f"{settings.api_prefix}/playbooks/{{playbook_id}}")
 async def delete_playbook(
     playbook_id: str,
-    current_user: User = Depends(get_current_active_user)
+    current_user: User = Depends(get_current_active_user),
+    api_key: Optional[str] = Depends(get_api_key)
 ):
     """Delete a playbook and its associated data"""
+    if not api_key:
+        api_key = settings.openai_api_key
+    
     try:
         # Check if playbook exists
+        vector_store = VectorStore(api_key=api_key)
         info = vector_store.get_playbook_info(playbook_id)
         if not info:
             raise HTTPException(404, "Playbook not found")
@@ -309,10 +387,17 @@ async def delete_playbook(
 
 @app.get(f"{settings.api_prefix}/stats")
 async def get_statistics(
-    current_user: User = Depends(get_current_active_user)
+    current_user: User = Depends(get_current_active_user),
+    api_key: Optional[str] = Depends(get_api_key)
 ):
     """Get system statistics and usage metrics"""
+    if not api_key:
+        api_key = settings.openai_api_key
+    
     try:
+        vector_store = VectorStore(api_key=api_key)
+        qa_engine = QAEngine(vector_store, api_key=api_key)
+        
         vector_stats = vector_store.get_statistics()
         token_usage = qa_engine.get_token_usage_report()
         
