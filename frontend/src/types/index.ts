@@ -68,3 +68,9 @@ export interface ConversationMessage {
   passages?: Passage[];
   confidence?: number;
 }
+
+export interface ApiKeyValidationResponse {
+  valid: boolean;
+  message: string;
+  model?: string;
+}

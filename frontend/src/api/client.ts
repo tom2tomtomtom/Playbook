@@ -6,6 +6,7 @@ const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000/api/
 class ApiClient {
   private client: AxiosInstance;
   private token: string | null = null;
+  private apiKey: string | null = null;
 
   constructor() {
     this.client = axios.create({
@@ -21,12 +22,19 @@ class ApiClient {
       this.setAuthToken(this.token);
     }
 
+    // Load API key from sessionStorage
+    this.apiKey = sessionStorage.getItem('openai_api_key');
+
     // Request interceptor
     this.client.interceptors.request.use(
       (config) => {
         // Add auth token if available
         if (this.token && config.headers) {
           config.headers.Authorization = `Bearer ${this.token}`;
+        }
+        // Add API key if available
+        if (this.apiKey && config.headers) {
+          config.headers['X-API-Key'] = this.apiKey;
         }
         return config;
       },
@@ -47,6 +55,12 @@ class ApiClient {
         } else if (error.response?.status === 429) {
           // Rate limit exceeded
           toast.error('Too many requests. Please slow down.');
+        } else if (error.response?.status === 400) {
+          // Check if it's an API key error
+          const errorMessage = (error.response.data as any)?.detail || '';
+          if (errorMessage.includes('OpenAI API key')) {
+            toast.error('Please set your OpenAI API key in the settings.');
+          }
         } else if (error.response?.status === 500) {
           // Server error
           toast.error('Server error. Please try again later.');
@@ -62,10 +76,26 @@ class ApiClient {
     this.client.defaults.headers.common['Authorization'] = `Bearer ${token}`;
   }
 
+  setApiKey(apiKey: string | null) {
+    this.apiKey = apiKey;
+    if (apiKey) {
+      sessionStorage.setItem('openai_api_key', apiKey);
+      this.client.defaults.headers.common['X-API-Key'] = apiKey;
+    } else {
+      sessionStorage.removeItem('openai_api_key');
+      delete this.client.defaults.headers.common['X-API-Key'];
+    }
+  }
+
+  getApiKey(): string | null {
+    return this.apiKey;
+  }
+
   logout() {
     this.token = null;
     localStorage.removeItem('auth_token');
     delete this.client.defaults.headers.common['Authorization'];
+    // Keep API key in session
   }
 
   async login(username: string, password: string) {
@@ -83,6 +113,13 @@ class ApiClient {
       this.setAuthToken(response.data.access_token);
     }
 
+    return response.data;
+  }
+
+  async validateApiKey(apiKey: string) {
+    const response = await this.client.post('/validate-api-key', {
+      api_key: apiKey,
+    });
     return response.data;
   }
 
@@ -148,6 +185,10 @@ class ApiClient {
 
   isAuthenticated(): boolean {
     return !!this.token;
+  }
+
+  hasApiKey(): boolean {
+    return !!this.apiKey;
   }
 }
 
